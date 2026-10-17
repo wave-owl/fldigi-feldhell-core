@@ -1,0 +1,17 @@
+# stem source fldigi-sname index HELL_BW height hellagc blackboard snrs -- fldigi 4.2.13 bench RX of 1 s + source + 2 s; noise seed = 1000 * index + snr step
+feldhell feldhell FELDHELL 0 245 20 2 0 clean,m05,m10
+slowhell slowhell SLOWHELL 1 30 20 2 0 clean,m05,m10
+hellx5 hellx5 HELLX5 2 1225 20 2 0 clean,m05,m10
+hellx9 hellx9 HELLX9 3 2205 20 2 0 clean,m05,m10
+fskh245 fskh245 FSKH245 4 250 20 2 0 clean,m05,m10
+fskh105 fskh105 FSKH105 5 120 20 2 0 clean,m05,m10
+hell80 hell80 HELL80 6 450 20 2 0 clean,m05,m10
+feldhell_h14 feldhell FELDHELL 7 245 14 2 0 clean
+feldhell_h42 feldhell FELDHELL 8 245 42 2 0 clean
+feldhell_agc1 feldhell FELDHELL 9 245 20 1 0 clean,m05
+feldhell_agc3 feldhell FELDHELL 10 245 20 3 0 clean,m05
+feldhell_bb feldhell FELDHELL 11 245 20 2 1 clean
+feldhell_bw295 feldhell FELDHELL 12 295 20 2 0 clean
+hellx9_bw245 hellx9 HELLX9 13 245 20 2 0 clean
+fskh245_bw245 fskh245 FSKH245 14 245 20 2 0 clean
+fskh245_bb fskh245 FSKH245 15 250 20 2 1 clean

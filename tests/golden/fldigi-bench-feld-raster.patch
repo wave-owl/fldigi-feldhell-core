@@ -1,0 +1,52 @@
+diff --git a/src/feld/feld.cxx b/src/feld/feld.cxx
+index cfe41adb..17c0bbb7 100644
+--- a/src/feld/feld.cxx
++++ b/src/feld/feld.cxx
+@@ -56,6 +56,31 @@ pthread_mutex_t feld_mutex = PTHREAD_MUTEX_INITIALIZER;
+ 
+ char feldmsg[80];
+ 
++#if BENCHMARK_MODE
++// ---- fldigi-bench Hell raster extension (local patch, not upstream) ----
++// With FLDIGI_BENCH_FELD_RASTER set, every column feld hands to put_rx_data() is appended
++// to that file once (RxColumnLen bytes, the new half of col_data), for wave-owl's
++// pixel-exact cross-check of fldigi-feldhell-core. The modem DSP is not touched.
++#include <cstdlib>
++static void bench_feld_raster(const int *col, int len)
++{
++	static FILE *f = 0;
++	static bool tried = false;
++	if (!tried) {
++		tried = true;
++		const char *fn = getenv("FLDIGI_BENCH_FELD_RASTER");
++		if (fn) f = fopen(fn, "wb");
++	}
++	if (!f) return;
++	for (int i = 0; i < len; i++) fputc(col[len + i] & 0xFF, f);
++	fflush(f);
++}
++#define BENCH_FELD_RASTER(c, l) bench_feld_raster(c, l)
++#else
++#define BENCH_FELD_RASTER(c, l) ((void)0)
++#endif
++// ---- end fldigi-bench Hell raster extension ----
++
+ void feld::tx_init()
+ {
+ 	txcounter = 0.0;
+@@ -357,6 +382,7 @@ void feld::FSKH_rx(cmplx z)
+ 	col_pointer++;
+ 	if (col_pointer == RxColumnLen) {
+ 		if (metric > progStatus.sldrSquelchValue || progStatus.sqlonoff == false) {
++			BENCH_FELD_RASTER(col_data, RxColumnLen);
+ 			switch (progdefaults.HellRcvWidth) {
+ 				case 4:
+ 					REQ(put_rx_data, col_data, 2 * RxColumnLen);
+@@ -425,6 +451,7 @@ void feld::rx(cmplx z)
+ 	col_pointer++;
+ 	if (col_pointer >= RxColumnLen) {
+ 		if (metric > progStatus.sldrSquelchValue || progStatus.sqlonoff == false) {
++			BENCH_FELD_RASTER(col_data, RxColumnLen);
+ 			switch (progdefaults.HellRcvWidth) {
+ 				case 4:
+ 					REQ(put_rx_data, col_data, 2 * RxColumnLen);
