@@ -11,7 +11,11 @@
  *   spans one transmitted column of 14 pixels, so the stream is the received keying in
  *   time order; the vertical phase of the raster drops out).
  * - Each glyph of each selected font is rendered at the receive resolution with one blank
- *   column before and after it (tx_char brackets every character with blank columns).
+ *   column before and after it (tx_char brackets every character with blank columns), in
+ *   four variants: two sub-pixel phases (0 and 1/2 receive pixel) times two pixel models,
+ *   the peak of the pixel interval (the AM receiver takes the peak, feld.cxx:385-398) and
+ *   the value at its centre (the FM receiver samples the smoothed discriminator). Without
+ *   the variants a half-pixel shift of the signal turns some glyphs into their neighbours.
  * - At the first ink after the previous character, every template is slid over +-1
  *   column around that point; the score is the Pearson correlation of template and
  *   stream, clipped to [0, 1]. The best fit is the character when its score reaches the
@@ -25,6 +29,11 @@
  *   glyphs (ink over at least 7 of the 14 rows, which no vertical shift can mimic; a decaying
  *   average on the circle) and, once known, only offsets within PHASE_TOL pixels of it
  *   are tried.
+ * - Several fonts are searched at once, and some glyphs of one font look much like another
+ *   glyph of another font (the "hell" S and the "7x7" 5). A transmission uses one font, so
+ *   the recogniser sums, per font, the best score of that font at every recognised glyph
+ *   (decaying, FONT_DECAY); once one font leads by FONT_LEAD it keeps that font's best
+ *   glyph unless another font fits better by more than FONT_MARGIN.
  * - A gap of at least 5 blank columns after a character is a word gap (tx_char sends a
  *   space as 3 blank columns inside its brackets: 7 between the glyphs, 2 otherwise).
  *
@@ -40,16 +49,20 @@
 #define INK_ON 0.6          /* ink: clearly more than the mid grey of an empty FM channel */
 #define SPACE_GAP 5         /* blank columns after a character that make a word gap */
 #define CONTRAST_MIN 0.4   /* ink on the glyph minus ink around it, at least */
-#define SIG_K 3.5           /* score >= SIG_K / sqrt(ink pixels): thin glyphs need more, */
+#define SIG_K 4.5           /* score >= SIG_K / sqrt(ink pixels): thin glyphs need more, */
 #define SIG_MAX 0.9         /* but never more than this */
 #define PHASE_SCORE 0.75    /* matches that teach the column phase */
 #define PHASE_DECAY 0.7     /* weight of the previous phase estimate */
 #define PHASE_LOCK 0.5      /* length of the averaged phase vector that counts as known */
+#define FONT_MARGIN 0.05    /* another font must fit this much better than the leading one */
+#define FONT_DECAY 0.9      /* weight of the earlier glyphs in the per-font score sums */
+#define FONT_LEAD 0.5       /* lead of the best font's score sum over the next one */
 
 enum { LAST_NONE, LAST_CHAR, LAST_OTHER };
 
 typedef struct tmpl {
     int c;
+    int font;
     int width;              /* glyph columns */
     int len;                /* (width + 2) * height pixels */
     int lead;               /* first ink pixel */
@@ -71,23 +84,47 @@ struct feld_recogniser {
     double *ps, *ps2;       /* prefix sums of a search window */
     int cap, len, pos, last_end, last;
     double ph_re, ph_im;    /* averaged column phase on the unit circle */
+    double fsum[FFELDHELL_FONT_COUNT];    /* decaying sum of each font's best scores */
+    double fbest[FFELDHELL_FONT_COUNT];   /* each font's best score at the last decision */
     int phase_tol;
     size_t footprint;
 };
 
-static int glyph_bit(int font, int c, int col, int k, int P)
+#define NVARIANTS 4
+
+static int row_ink(int font, int c, int w, long row)
 {
-    /* template pixel k of glyph column col: transmitted row floor((k + 1/2) 14 / P) */
-    int bits = feld_font_data(font, (unsigned char)c, col);
-    int row = ((2 * k + 1) * FELD_COLUMN_LEN) / (2 * P);
-    return bits > 0 && ((bits >> row) & 1);
+    /* transmitted pixel `row` of the glyph counted through its columns (14 per column) */
+    int col, bits;
+    if (row < 0 || row >= (long)w * FELD_COLUMN_LEN)
+        return 0;
+    col = (int)(row / FELD_COLUMN_LEN);
+    bits = feld_font_data(font, (unsigned char)c, col);
+    return bits > 0 && ((bits >> (row % FELD_COLUMN_LEN)) & 1);
+}
+
+static int glyph_bit(int font, int c, int w, int m, int P, int variant)
+{
+    /* receive pixel m of the glyph: interval [(m + phase) 14 / P, (m + 1 + phase) 14 / P) in
+     * transmitted pixels, phase 0 or 1/2; peak model: any ink in the interval, centre model:
+     * the pixel at its centre (integer arithmetic in units of 1 / (4 P) transmitted pixels) */
+    long a = (4L * m + 2L * (variant & 1)) * FELD_COLUMN_LEN;   /* x 1/(4P) */
+    long b = a + 4L * FELD_COLUMN_LEN;
+    long den = 4L * P, i;
+    if (variant & 2) {
+        for (i = a / den; i * den < b; i++)
+            if (row_ink(font, c, w, i))
+                return 1;
+        return 0;
+    }
+    return row_ink(font, c, w, (a + b) / 2 / den);
 }
 
 feld_recogniser *feld_recogniser_create(int height, unsigned font_mask, double floor,
                                         int ink_high)
 {
     feld_recogniser *r;
-    int f, c, w, m, P = height, total = 0, nt = 0, k;
+    int f, c, w, m, P = height, total = 0, nt = 0;
     r = (feld_recogniser *)calloc(1, sizeof *r);
     if (!r)
         return NULL;
@@ -102,8 +139,8 @@ feld_recogniser *feld_recogniser_create(int height, unsigned font_mask, double f
             w = feld_glyph_width(f, (unsigned char)c);
             if (w == 0)
                 continue;
-            nt++;
-            total += w * P;
+            nt += NVARIANTS;
+            total += NVARIANTS * w * P;
             if (w > r->wmax)
                 r->wmax = w;
         }
@@ -127,19 +164,21 @@ feld_recogniser *feld_recogniser_create(int height, unsigned font_mask, double f
         if (!(font_mask & (1u << f)))
             continue;
         for (c = '!'; c <= '~'; c++) {
+          int variant;
+          for (variant = 0; variant < NVARIANTS; variant++) {
             tmpl *t;
             w = feld_glyph_width(f, (unsigned char)c);
             if (w == 0)
                 continue;
             t = &r->t[r->ntmpl];
             t->c = c;
+            t->font = f;
             t->width = w;
             t->len = (w + 2) * P;
             t->ink = r->inkpool + total;
             t->lead = -1;
             for (m = 0; m < w * P; m++) {
-                k = m % P;
-                if (glyph_bit(f, c, m / P, k, P)) {
+                if (glyph_bit(f, c, w, m, P, variant)) {
                     r->inkpool[total + t->nink++] = P + m;
                     if (t->lead < 0)
                         t->lead = P + m;
@@ -166,6 +205,7 @@ feld_recogniser *feld_recogniser_create(int height, unsigned font_mask, double f
             if (t->lead > r->maxlead)
                 r->maxlead = t->lead;
             r->ntmpl++;
+          }
         }
     }
     r->footprint = sizeof *r + (size_t)nt * sizeof(tmpl) + (size_t)total * sizeof(int) +
@@ -200,6 +240,8 @@ void feld_recogniser_reset(feld_recogniser *r)
     r->last_end = 0;
     r->last = LAST_NONE;
     r->ph_re = r->ph_im = 0.0;
+    memset(r->fsum, 0, sizeof r->fsum);
+    memset(r->fbest, 0, sizeof r->fbest);
 }
 
 static int phase_known(const feld_recogniser *r, int *phase)
@@ -260,12 +302,35 @@ static void compact(feld_recogniser *r)
     r->last_end -= d;
 }
 
+static int leading_font(const feld_recogniser *r)
+{
+    int f, lead = -1, n = 0;
+    double first = -1.0, second = -1.0;
+    for (f = 0; f < FFELDHELL_FONT_COUNT; f++) {
+        if (r->fsum[f] <= 0.0)
+            continue;
+        n++;
+        if (r->fsum[f] > first) {
+            second = first;
+            first = r->fsum[f];
+            lead = f;
+        } else if (r->fsum[f] > second) {
+            second = r->fsum[f];
+        }
+    }
+    if (n < 2)
+        return -1;
+    return first - second >= FONT_LEAD ? lead : -1;
+}
+
 /* Best template at the first ink q: returns the score, sets *best_t, *best_o and the
- * contrast (mean ink on the glyph minus mean ink around it) of that fit. */
+ * contrast (mean ink on the glyph minus mean ink around it) of that fit; keeps every font's
+ * best score in r->fbest. */
 static double best_match(feld_recogniser *r, int q, int *best_t, int *best_o, double *contrast)
 {
-    int P = r->P, lo, hi, i, j, o, o0, o1, phase = 0, known = phase_known(r, &phase);
-    double best = -2.0;
+    int P = r->P, lo, hi, i, j, o, o0, o1, phase = 0, known = phase_known(r, &phase), f, lead;
+    double best = -2.0, font_best[FFELDHELL_FONT_COUNT], font_contrast[FFELDHELL_FONT_COUNT];
+    int font_t[FFELDHELL_FONT_COUNT], font_o[FFELDHELL_FONT_COUNT];
     lo = q - r->maxlead - P;
     if (lo < 0)
         lo = 0;
@@ -276,6 +341,12 @@ static double best_match(feld_recogniser *r, int q, int *best_t, int *best_o, do
     for (i = lo; i < hi; i++) {
         r->ps[i - lo + 1] = r->ps[i - lo] + r->s[i];
         r->ps2[i - lo + 1] = r->ps2[i - lo] + r->s[i] * r->s[i];
+    }
+    for (f = 0; f < FFELDHELL_FONT_COUNT; f++) {
+        font_best[f] = -2.0;
+        font_t[f] = -1;
+        font_o[f] = q;
+        font_contrast[f] = 0.0;
     }
     *best_t = -1;
     *best_o = q;
@@ -297,13 +368,31 @@ static double best_match(feld_recogniser *r, int q, int *best_t, int *best_o, do
             for (i = 0; i < t->nink; i++)
                 dot += r->s[o + t->ink[i]];
             score = (dot - sum * t->nink / n) / sqrt(t->var * var);
-            if (score > best) {
-                best = score;
-                *best_t = j;
-                *best_o = o;
-                *contrast = dot / t->nink - (sum - dot) / (n - t->nink);
+            if (score > font_best[t->font]) {
+                font_best[t->font] = score;
+                font_t[t->font] = j;
+                font_o[t->font] = o;
+                font_contrast[t->font] = dot / t->nink - (sum - dot) / (n - t->nink);
             }
         }
+    }
+    for (f = 0; f < FFELDHELL_FONT_COUNT; f++) {
+        r->fbest[f] = font_t[f] >= 0 && font_best[f] > 0.0 ? font_best[f] : 0.0;
+        if (font_t[f] >= 0 && font_best[f] > best) {
+            best = font_best[f];
+            *best_t = font_t[f];
+        }
+    }
+    lead = leading_font(r);
+    if (*best_t >= 0 && lead >= 0 && font_t[lead] >= 0 && r->t[*best_t].font != lead &&
+        font_best[lead] >= best - FONT_MARGIN) {
+        best = font_best[lead];
+        *best_t = font_t[lead];
+    }
+    if (*best_t >= 0) {
+        f = r->t[*best_t].font;
+        *best_o = font_o[f];
+        *contrast = font_contrast[f];
     }
     return best < 0.0 ? 0.0 : (best > 1.0 ? 1.0 : best);
 }
@@ -311,7 +400,7 @@ static double best_match(feld_recogniser *r, int q, int *best_t, int *best_o, do
 static void scan(feld_recogniser *r, int flushing, ffeldhell_char *out, size_t max,
                  size_t *n, size_t *dropped)
 {
-    int P = r->P, q, bt, bo;
+    int P = r->P, q, bt, bo, f;
     double score, contrast;
     for (;;) {
         for (q = r->pos; q < r->len && r->s[q] < INK_ON; q++)
@@ -330,6 +419,8 @@ static void scan(feld_recogniser *r, int flushing, ffeldhell_char *out, size_t m
             emit(r->t[bt].c, score, out, max, n, dropped);
             if (score >= PHASE_SCORE && r->t[bt].tall)
                 learn_phase(r, bo);
+            for (f = 0; f < FFELDHELL_FONT_COUNT; f++)
+                r->fsum[f] = FONT_DECAY * r->fsum[f] + r->fbest[f];
             r->last_end = bo + (1 + r->t[bt].width) * P;
             r->pos = r->last_end + P;   /* skip the trailing blank column */
             r->last = LAST_CHAR;

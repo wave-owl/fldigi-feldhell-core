@@ -146,19 +146,27 @@ ported receiver builds:
    in time order and the vertical phase of the raster drops out. Pixel values become ink in
    `[0, 1]` (dark is ink, or bright with blackboard).
 2. Every glyph of the selected fonts (default: "7x7" and fldigi's default TX font "hell")
-   is rendered at the receive resolution with a blank column before and after it.
+   is rendered at the receive resolution with a blank column before and after it, in four
+   variants: two sub-pixel phases (0 and 1/2 receive pixel) times two pixel models (the
+   peak of the pixel interval, as the AM receiver takes it, and the value at its centre, as
+   the FM receiver samples it). Without them a half-pixel shift of the signal turns some
+   glyphs into their neighbours.
 3. At the first ink pixel after the previous character, every template is tried at every
    offset within +-1 column; the score is the Pearson correlation of template and stream,
    clipped to `[0, 1]`.
 4. The best fit is reported as a character only if its score reaches the floor (default
    0.55), the glyph stands out from its surroundings (ink contrast >= 0.4) and the score is
-   significant for the glyph's size (`>= min(0.9, 3.5 / sqrt(ink pixels))`: a thin glyph
+   significant for the glyph's size (`>= min(0.9, 4.5 / sqrt(ink pixels))`: a thin glyph
    such as `!` correlates with noise by chance far more often than a letter). Otherwise the
    block is reported as "no match" (`c = 0`) with its score -- never a guessed character.
 5. Small glyphs (`.` and the apostrophe) fit at several heights. The column phase is the
    same for a whole transmission, so it is learned from confident matches of tall glyphs and
    then restricts the offsets to +-`height/10` pixels around it.
-6. Five or more blank columns after a character are a word gap (a space is seven blank
+6. Some glyphs of one font look much like a glyph of another font (the "hell" S and the
+   "7x7" 5). A transmission uses one font, so the recogniser sums each font's best score at
+   every recognised glyph (decaying by 0.9 per glyph); once a font leads by 0.5 it keeps
+   that font's best glyph unless another font fits better by more than 0.05.
+7. Five or more blank columns after a character are a word gap (a space is seven blank
    columns between two glyphs, other characters two).
 
 The thresholds were set on synthetic AWGN tests (`tests/test_feldhell.c`, wave-owl's
@@ -255,13 +263,13 @@ at most 1 LSB of TX difference. `make sanitize` runs both under ASan and UBSan.
 
 | Submode | RX x real time | RX CPU | TX x real time | RX memory |
 |---|---|---|---|---|
-| FELDHELL | 1724 | 0.06 % | 15070 | 399 KiB |
-| SLOWHELL | 3073 | 0.03 % | 36162 | 1024 KiB |
-| HELLX5 | 1554 | 0.06 % | 22469 | 327 KiB |
-| HELLX9 | 1120 | 0.09 % | 15920 | 319 KiB |
-| FSKH245 | 2704 | 0.04 % | 36479 | 399 KiB |
-| FSKH105 | 2667 | 0.04 % | 35818 | 399 KiB |
-| HELL80 | 2240 | 0.04 % | 27926 | 354 KiB |
+| FELDHELL | 1159 | 0.09 % | 15116 | 505 KiB |
+| SLOWHELL | 2801 | 0.04 % | 41190 | 1130 KiB |
+| HELLX5 | 554 | 0.18 % | 24716 | 434 KiB |
+| HELLX9 | 334 | 0.30 % | 14845 | 426 KiB |
+| FSKH245 | 1605 | 0.06 % | 33398 | 505 KiB |
+| FSKH105 | 1539 | 0.06 % | 35181 | 505 KiB |
+| HELL80 | 1086 | 0.09 % | 28085 | 461 KiB |
 
 Budget (wave-owl R-901.5): below 5 % of one core and 2 MB per receiver for every submode;
 Slow Hell's memory is mostly fldigi's 91428-sample AGC average (Q7).
