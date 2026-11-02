@@ -302,3 +302,12 @@ GPL-3.0-or-later, as fldigi ([LICENSE](LICENSE)). Ported from fldigi 4.2.13: `fe
 `feld.h`, `fontdef.h` and the fonts (c) 2006-2014 Dave Freese W1HKJ, with much owed to Joe
 Veldhuis N8FQ, adapted from gmfsk (c) 2001-2004 Tomi Manninen OH2BNS and Lawrence Glaister
 VE7IT. The recogniser and the C port (c) 2026 Gerolf Ziegenhain.
+
+<!-- wave-owl-source-sbom-docs:start -->
+## Source SBOMs
+
+Every published release, including prereleases, receives automatically generated
+CycloneDX JSON and readable documentation. See the [initial source report](SBOM.md),
+[CycloneDX JSON](SBOM.cdx.json) and [release policy](SBOM-POLICY.md) for scope,
+release assets, provenance declarations and reproduction instructions.
+<!-- wave-owl-source-sbom-docs:end -->
